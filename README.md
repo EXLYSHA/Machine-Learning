@@ -10,7 +10,103 @@
 
 ### 项目文件结构
 
+```
+├── README.md									#本文件，对于项目的实验报告与说明
+├── convert_json_to_csv.py						#能够按照指定格式，将原有json文件转化为模型需要的csv文件的程序代码
+├── data										#项目数据，由于train.json过大无法上传到GitHub，已被删除
+│   ├── column_min_max_vals.csv					#数据库不同页的统计信息
+│   └── test_data.json							#用于测试的数据
+├── environment.txt								#项目环境信息
+└── learnedcardinalities						#根据参考代码修改的模型代码
+    ├── data									#模型加载数据的文件夹
+    │   ├── column_min_max_vals.csv				#数据库不同页的统计信息
+    │   └── train.csv							#用于训练的数据
+    ├── format_predictions.py					#能够按照提交格式，将输出csv文件转化为能够提交的csv格式的代码
+    ├── mscn									#模型代码文件夹
+    │   ├── data.py								#（原有参考代码中包含的文件）包含数据加载与训练，预测所必需的函数
+    │   ├── model.py							#MSCN模型的原始实现，包含详细的模型结构
+    │   ├── util.py								#（原有参考代码中包含的文件）包含程序运行所必需的辅助函数
+    │   └── xgb_model.py						#XGBoost算法模型的原始实现，包含详细的模型结构
+    ├── results									#模型输出预测结果的文件夹
+    │   ├── predictions_test.csv				#模型原始输出的csv文件
+    │   └── predictions_test_formatted.csv		#经过格式转化后，可直接用于结果提交的csv文件
+    ├── train.py								#程序的主函数
+    └── workloads								#模型加载预测数据的文件夹
+        └── test.csv							#模型加载的预测数据
+```
+
 ### 项目主要实现代码
+
+##### MSCN模型
+
+模型使用双层MLP对samples、predicates、joins进行编码，之后进行掩码聚合，最后连接并经过MLP与sigmoid进行预测，整体模型结构如下图：
+
+```
+           samples   predicates   joins
+               │         │         │
+         MLP(2层)    MLP(2层)    MLP(2层)
+               ↓         ↓         ↓
+          masked avg  masked avg  masked avg
+               ↓         ↓         ↓
+             [hid_sample | hid_pred | hid_join]
+                              │
+                        Concatenation
+                              ↓
+                        Linear + ReLU
+                              ↓
+                        Linear + Sigmoid
+                              ↓
+                            Output
+
+```
+
+单层MLP模型由两层线性层加上一层Relu层组成。
+
+##### XGBoost模型
+
+模型使用同样的编码器，不同点在于使用XGBoost结构进行回归。具体模型的推理路径如下：
+
+```
+(samples, predicates, joins) 
+        ↓
+  3 路 MLP + Attention
+        ↓
+  3 个向量拼接 (hid_sample | hid_predicate | hid_join)
+        ↓
+    主路径 MLP  +  残差连接
+        ↓
+      融合特征向量
+        ↓
+    → 若 is_trained = False: 输出随机 sigmoid
+    → 若 is_trained = True: 用 XGBoost 回归
+
+```
+
+##### 对于两者模型的分析
+
+MSCN的优点：
+
+- 网络较深，参数较多，善于学习复杂模型分布
+- 使用端到端训练，不存在模型偏差
+- 掩码与平均聚合能够适应变长输入
+
+MSCN的缺点：
+
+- 参数量大，训练慢且依赖于大规模数据
+- 网络较深，可能出现过拟合现象
+- 对于优化方法，学习率等变量影响较大
+
+XGBoost的优点：
+
+- 特征提取快，训练速度快
+- 模型相比于深层神经网络有更好的鲁棒性
+
+XGBoost的缺点：
+
+- 难以适应复杂的场景，在场景复杂的情况下表现较差
+- 训练解耦，无法对两者模型进行同时优化
+
+实测结果使用MSCN模型表现更好，XGBoost训练较快。
 
 ### 代码使用
 
