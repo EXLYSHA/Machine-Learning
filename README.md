@@ -150,6 +150,8 @@ testset 	#workload的名称，使用workload的文件名即可
 
 [2] Benjamin Hilprecht, Andreas Schmidt, Moritz Kulessa, Alejandro Molina, Kristian Kersting, Carsten Binnig: DeepDB: Learn from Data, not from Queries! VLDB 2020.
 
-### 作者
+### 项目信息
 
-李子轩	2023202292
+作者：李子轩	2023202292
+
+项目地址：[EXLYSHA/Machine-Learning: MSCN based Machine Learning homework. RUC 2025.](https://github.com/EXLYSHA/Machine-Learning)
