@@ -9,6 +9,7 @@ from torch.utils.data import DataLoader
 from mscn.util import *
 from mscn.data import get_train_datasets, load_data, make_dataset
 from mscn.model import SetConv
+from mscn.xgb_model import XGBoostCardinalityEstimator
 
 
 def unnormalize_torch(vals, min_val, max_val):
@@ -77,7 +78,7 @@ def print_qerror(preds_unnorm, labels_unnorm):
     print("Mean: {}".format(np.mean(qerror)))
 
 
-def train_and_predict(workload_name, num_queries, num_epochs, batch_size, hid_units, cuda):
+def train_and_predict(workload_name, num_queries, num_epochs, batch_size, hid_units, cuda, use_xgb=False):
     # Load training and validation data
     num_materialized_samples = 1000
     dicts, column_min_max_vals, min_val, max_val, labels_train, labels_test, max_num_joins, max_num_predicates, train_data, test_data = get_train_datasets(
@@ -85,13 +86,14 @@ def train_and_predict(workload_name, num_queries, num_epochs, batch_size, hid_un
     table2vec, column2vec, op2vec, join2vec = dicts
 
     # Train model
-    sample_feats = len(table2vec)  # 移除 num_materialized_samples
+    sample_feats = len(table2vec)
     predicate_feats = len(column2vec) + len(op2vec) + 1
     join_feats = len(join2vec)
 
-    model = SetConv(sample_feats, predicate_feats, join_feats, hid_units)
-
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+    if use_xgb:
+        model = XGBoostCardinalityEstimator(sample_feats, predicate_feats, join_feats, hid_units)
+    else:
+        model = SetConv(sample_feats, predicate_feats, join_feats, hid_units)
 
     if cuda:
         model.cuda()
@@ -99,30 +101,31 @@ def train_and_predict(workload_name, num_queries, num_epochs, batch_size, hid_un
     train_data_loader = DataLoader(train_data, batch_size=batch_size)
     test_data_loader = DataLoader(test_data, batch_size=batch_size)
 
-    model.train()
-    for epoch in range(num_epochs):
-        loss_total = 0.
+    if use_xgb:
+        # 训练XGBoost模型
+        model.train_xgb(train_data_loader, num_epochs)
+    else:
+        # 训练原始MSCN模型
+        optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+        model.train()
+        for epoch in range(num_epochs):
+            loss_total = 0.
+            for batch_idx, data_batch in enumerate(train_data_loader):
+                samples, predicates, joins, targets, sample_masks, predicate_masks, join_masks = data_batch
+                if cuda:
+                    samples, predicates, joins, targets = samples.cuda(), predicates.cuda(), joins.cuda(), targets.cuda()
+                    sample_masks, predicate_masks, join_masks = sample_masks.cuda(), predicate_masks.cuda(), join_masks.cuda()
+                samples, predicates, joins, targets = Variable(samples), Variable(predicates), Variable(joins), Variable(targets)
+                sample_masks, predicate_masks, join_masks = Variable(sample_masks), Variable(predicate_masks), Variable(join_masks)
 
-        for batch_idx, data_batch in enumerate(train_data_loader):
+                optimizer.zero_grad()
+                outputs = model(samples, predicates, joins, sample_masks, predicate_masks, join_masks)
+                loss = qerror_loss(outputs, targets.float(), min_val, max_val)
+                loss_total += loss.item()
+                loss.backward()
+                optimizer.step()
 
-            samples, predicates, joins, targets, sample_masks, predicate_masks, join_masks = data_batch
-
-            if cuda:
-                samples, predicates, joins, targets = samples.cuda(), predicates.cuda(), joins.cuda(), targets.cuda()
-                sample_masks, predicate_masks, join_masks = sample_masks.cuda(), predicate_masks.cuda(), join_masks.cuda()
-            samples, predicates, joins, targets = Variable(samples), Variable(predicates), Variable(joins), Variable(
-                targets)
-            sample_masks, predicate_masks, join_masks = Variable(sample_masks), Variable(predicate_masks), Variable(
-                join_masks)
-
-            optimizer.zero_grad()
-            outputs = model(samples, predicates, joins, sample_masks, predicate_masks, join_masks)
-            loss = qerror_loss(outputs, targets.float(), min_val, max_val)
-            loss_total += loss.item()
-            loss.backward()
-            optimizer.step()
-
-        print("Epoch {}, loss: {}".format(epoch, loss_total / len(train_data_loader)))
+            print("Epoch {}, loss: {}".format(epoch, loss_total / len(train_data_loader)))
 
     # Get final training and validation set predictions
     preds_train, t_total = predict(model, train_data_loader, cuda)
@@ -190,9 +193,10 @@ def main():
     parser.add_argument('--batch', type=int, default=1024, help='batch size')
     parser.add_argument('--hid', type=int, default=256, help='hidden units')
     parser.add_argument('--cuda', action='store_true', help='use cuda')
+    parser.add_argument('--use-xgb', action='store_true', help='use XGBoost model instead of MSCN')
     args = parser.parse_args()
 
-    train_and_predict(args.testset, args.queries, args.epochs, args.batch, args.hid, args.cuda)
+    train_and_predict(args.testset, args.queries, args.epochs, args.batch, args.hid, args.cuda, args.use_xgb)
 
 
 if __name__ == '__main__':
